@@ -17,14 +17,18 @@
 | Native checks differ on legacy qualities | Native Phred detection is heuristic; normalize encoding explicitly and use the standalone checker |
 
 Check the process exit code for every command. `samtools quickcheck` alone does
-not read all records; the creation wrapper additionally decodes the complete
-CRAM. For hand-written shell pipelines enable `set -euo pipefail` and run the
-final comparison explicitly.
+not compare read contents; by default the creation wrapper additionally decodes
+the complete CRAM and compares the restored reads with the original FASTQs.
+`--fast` skips that comparison and the separate FASTQ checksum pass. For a CRAM
+created with `--fast`, use the README's verification commands to check it later.
+For hand-written shell pipelines enable `set -euo pipefail` and run the final
+comparison explicitly.
 
-Creation stages and verifies all outputs before publishing sample-named files.
-Each file is published without overwriting an existing path; publication is not
+Creation stages all outputs and runs the selected checks before publishing
+sample-named files. Each file is published without overwriting an existing path; publication is not
 a transaction spanning all files. The `.creation.json` completion record is
-published last. If publication fails, the tool removes files it just published.
+published last and records whether read verification passed or was skipped.
+If publication fails, the tool removes files it just published.
 An abrupt termination or system failure can leave an incomplete set without
 that completion record; inspect those files before rerunning the same prefix.
 

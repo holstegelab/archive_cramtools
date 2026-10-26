@@ -1,6 +1,7 @@
 # Low-level use
 
-The high-level creation command adds tags and produces a verified CRAM. It does
+The high-level creation command adds tags and verifies the CRAM by default;
+`--fast` skips the read comparison and separate FASTQ checksum pass. It does
 not realign, mark duplicates or modify the alignment with the optional
 dechimerization algorithm.
 

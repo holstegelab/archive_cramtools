@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Store an alignment and its original paired FASTQs in a verified tagged CRAM."""
+"""Store an alignment and its original paired FASTQs in a tagged CRAM, verified by default."""
 import argparse
 import os
 from pathlib import Path
@@ -89,7 +89,10 @@ def main(argv=None):
     parser.add_argument("--sort-memory", default="768M", help="samtools sort memory per thread")
     parser.add_argument("--tmp-dir", help="scratch directory for sorting/collation")
     parser.add_argument("--name-collated", action="store_true", help="input already groups QNAMEs; preserves aligner order and reduces buffering")
-    parser.add_argument("--quality-mode", choices=("pipeline", "strict"), default="pipeline")
+    parser.add_argument("--fast", action="store_true",
+                        help="skip FASTQ checksum calculation and final read comparison; keep quickcheck and indexing")
+    parser.add_argument("--quality-mode", choices=("pipeline", "strict"), default="pipeline",
+                        help="quality comparison policy (default: pipeline; unused with --fast)")
     parser.add_argument("--samtools", default="samtools")
     args = parser.parse_args(argv)
     try:
@@ -116,13 +119,21 @@ def main(argv=None):
         for destination in destinations.values():
             if os.path.lexists(destination):
                 raise ValueError(f"Output already exists: {destination}")
+        if args.fast:
+            # Still reject existing check reports above, so stale reports cannot
+            # be mistaken for verification of this new CRAM.
+            del destinations["fastq_stats"]
+            del destinations["verification"]
         header = subprocess.check_output([args.samtools, "view", "-H", "-T", args.reference, args.input], text=True)
         if sum(line.startswith("@RG\t") for line in header.splitlines()) > 1:
             raise ValueError("Creation accepts one read group at a time; split the input before annotation")
-        print("Validating original FASTQs and calculating payload digests...", file=sys.stderr)
-        expected = fastq_stats(args.f1, args.f2, args.quality_mode)
+        if args.fast:
+            print("Fast mode: skipping FASTQ checksums and final read comparison.", file=sys.stderr)
+        else:
+            print("Validating original FASTQs and calculating payload digests...", file=sys.stderr)
+            expected = fastq_stats(args.f1, args.f2, args.quality_mode)
         # Stage on the destination filesystem for publication without overwrites.
-        # All outputs are verified before any final filename becomes visible.
+        # Complete all requested checks before publishing any final filename.
         with tempfile.TemporaryDirectory(prefix=f".{prefix.name}.", dir=prefix.parent) as stage_name:
             stage = Path(stage_name)
             staged = output_paths(stage / prefix.name)
@@ -142,21 +153,24 @@ def main(argv=None):
                               "-O", "CRAM", "-o", str(cram), "-"]]
                 pipeline(commands)
                 subprocess.run([args.samtools, "quickcheck", "-v", str(cram)], check=True)
-                print("Decoding the completed CRAM and verifying restored reads...", file=sys.stderr)
-                observed = alignment_stats(cram, args.reference, args.quality_mode, args.samtools, args.threads)
-                report = comparison(expected, observed)
-                if not report["match"]:
-                    raise ValueError("Restored CRAM differs from source FASTQs: " + ", ".join(report["differences"]))
+                if not args.fast:
+                    print("Decoding the completed CRAM and verifying restored reads...", file=sys.stderr)
+                    observed = alignment_stats(cram, args.reference, args.quality_mode, args.samtools, args.threads)
+                    report = comparison(expected, observed)
+                    if not report["match"]:
+                        raise ValueError("Restored CRAM differs from source FASTQs: " + ", ".join(report["differences"]))
+                    write_json(staged["fastq_stats"], expected)
+                    write_json(staged["verification"], report)
                 subprocess.run([args.samtools, "index", "-@", str(args.threads), str(cram)], check=True)
-                write_json(staged["fastq_stats"], expected)
-                write_json(staged["verification"], report)
                 version = subprocess.check_output([args.samtools, "--version"], text=True).splitlines()[0]
                 write_json(staged["creation"], {"tool": "cram_roundtrip", "version": "0.1.0",
                            "sample": prefix.name,
                            "samtools": version, "reference_name": Path(args.reference).name,
+                           "verification": "skipped" if args.fast else "passed",
                            "quality_mode": args.quality_mode, "threads": args.threads})
             publish_outputs(staged, destinations)
-        print(f"Created and verified: {destinations['cram']}")
+        status = "Created (read verification skipped)" if args.fast else "Created and verified"
+        print(f"{status}: {destinations['cram']}")
         return 0
     except (OSError, ValueError, RuntimeError, EOFError, subprocess.SubprocessError) as error:
         print(f"create_cram: error: {error}", file=sys.stderr)

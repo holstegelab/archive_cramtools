@@ -69,14 +69,16 @@ records, with flags 589 and 653 (including the vendor-quality-failure bit).
 They inherit the last primary read group's ID seen by the annotator; if there
 was no such record they have no RG tag. This is why creation is limited to one
 read group. This recovery does not repair an alignment missing just one mate;
-the final comparison will reject lost payloads.
+the default final comparison will reject lost payloads.
 
 The creation wrapper rejects pre-existing restoration tags and multiple declared
 read groups. It expects primary pairs with sequence and quality present. The
-final decoded comparison is mandatory, including when the C annotator itself
-does not detect a discrepancy. Duplicate names, unsupported trimming and missing
-source payloads should be corrected upstream; the wrapper has no option to waive
-a failed comparison.
+final decoded comparison runs by default, including when the C annotator itself
+does not detect a discrepancy. `--fast` skips the separate FASTQ checksum pass
+and this comparison, while retaining annotation, sorting, quickcheck and indexing.
+It records verification as skipped. Input requirements still apply: duplicate
+names, unsupported trimming and missing source payloads should be corrected
+upstream.
 
 ## What is retained
 

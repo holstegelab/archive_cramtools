@@ -1,4 +1,6 @@
+from contextlib import redirect_stderr, redirect_stdout
 import gzip
+import io
 import json
 from pathlib import Path
 import shutil
@@ -6,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -13,6 +16,7 @@ sys.path.insert(0, str(ROOT / "examples"))
 from fastq_check import alignment_stats, comparison, fastq_stats, load_stats
 from roundtrip import make_inputs
 from create_cram import publish_outputs
+import create_cram
 
 
 class RoundtripTests(unittest.TestCase):
@@ -53,6 +57,8 @@ class RoundtripTests(unittest.TestCase):
         self.assertTrue(Path(str(cram) + ".crai").is_file())
         report = json.loads((self.directory / "SAMPLE001.verification.json").read_text())
         self.assertTrue(report["match"])
+        creation = json.loads((self.directory / "SAMPLE001.creation.json").read_text())
+        self.assertEqual(creation["verification"], "passed")
         self.assertEqual(report["observed"]["mates"][0]["reads"], 3)
         restored = [self.directory / f"restored_R{i}.fastq.gz" for i in (1, 2)]
         result = subprocess.run([sys.executable, str(ROOT / "scripts/bam_revert.py"), "-i", str(cram),
@@ -64,6 +70,53 @@ class RoundtripTests(unittest.TestCase):
         self.assertIn("ZB:Z:TT", sam)
         self.assertIn("YB:Z:CC", sam)
         self.assertIn("filtered\t589\t", sam)
+
+    def test_fast_mode_skips_payload_scans_and_can_be_verified_later(self):
+        # Run the real encoder but fail if either expensive checksum pass starts.
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(create_cram, "fastq_stats", side_effect=AssertionError("FASTQ scan")), \
+             mock.patch.object(create_cram, "alignment_stats", side_effect=AssertionError("CRAM scan")), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            status = create_cram.main([
+                "--input", str(self.directory / "aligned.sam"),
+                "--f1", str(self.f1), "--f2", str(self.f2),
+                "--reference", str(self.reference), "--output-prefix", str(self.directory / "FAST"),
+                "--threads", "1", "--fast",
+            ])
+        self.assertEqual(status, 0, stderr.getvalue())
+        self.assertIn("read verification skipped", stdout.getvalue())
+        self.assertNotIn("Created and verified", stdout.getvalue())
+        self.assertEqual({p.name for p in self.directory.glob("FAST.*")}, {
+            "FAST.cram", "FAST.cram.crai", "FAST.merge.stats.tsv",
+            "FAST.badmap_R1.fastq.gz", "FAST.badmap_R2.fastq.gz", "FAST.creation.json",
+        })
+        creation = json.loads((self.directory / "FAST.creation.json").read_text())
+        self.assertEqual(creation["verification"], "skipped")
+        self.assertEqual(list(self.directory.glob(".FAST.*")), [])
+        # Independent verification includes the pair dropped from the alignment.
+        self.assertEqual(
+            fastq_stats(self.f1, self.f2, "strict"),
+            alignment_stats(self.directory / "FAST.cram", str(self.reference), "strict"),
+        )
+
+    def test_fast_mode_defers_payload_mismatch_to_later_check(self):
+        self.f1.write_text(self.f1.read_text().replace("pairA", "different"))
+        self.f2.write_text(self.f2.read_text().replace("pairA", "different"))
+        self.create(["--fast"])
+        stats = self.directory / "expected.json"
+        result = subprocess.run([
+            sys.executable, str(ROOT / "scripts/fastq_check.py"), "stats",
+            "--f1", str(self.f1), "--f2", str(self.f2), "--quality-mode", "strict",
+            "--output", str(stats),
+        ], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([
+            sys.executable, str(ROOT / "scripts/fastq_check.py"), "check",
+            "--stats", str(stats), "--input", str(self.directory / "SAMPLE001.cram"),
+            "--reference", str(self.reference),
+        ], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Mismatch", result.stdout)
 
     def test_gzip_sources_and_name_collated_input(self):
         for key in ("f1", "f2"):
@@ -106,9 +159,11 @@ class RoundtripTests(unittest.TestCase):
     def test_existing_sidecar_is_untouched(self):
         sentinel = self.directory / "SAMPLE001.verification.json"
         sentinel.write_text("unchanged")
-        self.create(success=False)
-        self.assertEqual(sentinel.read_text(), "unchanged")
-        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [sentinel])
+        for extra in ([], ["--fast"]):
+            with self.subTest(extra=extra):
+                self.create(extra, success=False)
+                self.assertEqual(sentinel.read_text(), "unchanged")
+                self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [sentinel])
 
     def test_sample_prefix_is_used_for_every_output(self):
         self.create(prefix="SAMPLE.v1")
@@ -196,9 +251,11 @@ class RoundtripTests(unittest.TestCase):
         data[-8] ^= 1
         broken.write_bytes(data)
         self.f1 = broken
-        self.create(success=False)
-        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [])
-        self.assertEqual(list(self.directory.glob(".SAMPLE001.*")), [])
+        for extra in ([], ["--fast"]):
+            with self.subTest(extra=extra):
+                self.create(extra, success=False)
+                self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [])
+                self.assertEqual(list(self.directory.glob(".SAMPLE001.*")), [])
 
     def test_truncated_cram_is_an_error(self):
         self.create()

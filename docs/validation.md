@@ -22,6 +22,19 @@ later comparison uses the same policy. The check does not include RG IDs; use it
 per read group with the original names. `--include-read-group-in-name` during
 reversion deliberately changes those names.
 
+## Optional creation check
+
+`create_cram.py` runs the FASTQ checksum pass and compares the finished CRAM by
+default. With `--fast`, it skips both passes and omits `.fastq.stats.json` and
+`.verification.json`. The `.creation.json` record sets `verification` to `skipped`
+instead of `passed`. Sorting, indexing, `samtools quickcheck` and the annotator's
+own checks still run, but they do not establish that the original read information
+is preserved. `--quality-mode` only controls verification and has no effect with
+`--fast`.
+
+To check a CRAM created with `--fast`, run `fastq_check.py stats` on the original
+FASTQs, then `fastq_check.py check` on the CRAM, as shown in the README.
+
 ## Quality modes
 
 | Mode | Comparison rule |
@@ -71,6 +84,8 @@ FASTQs, filenames with spaces/apostrophes, checks of read identity and quality
 mode, malformed input, missing tags, failed samtools execution and preservation
 of existing output. Sample-prefix tests cover multiple samples in a shared
 directory, existing sidecars, broken symlinks and rollback on publication conflicts.
+Fast-mode tests cover skipped checksum passes, recovery of dropped pairs,
+verification afterwards, deferred mismatches and rejection of corrupt gzip input.
 `make test` requires the external tools and fails if they
 are missing.
 

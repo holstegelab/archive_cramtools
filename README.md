@@ -4,6 +4,9 @@ Keep alignments and recoverable read data together in one CRAM file. This tool
 stores bases and quality scores removed by trimming in extra SAM tags, so paired
 FASTQs can be reconstructed later.
 
+It also re-adds read pairs that are present in the original FASTQs but were
+dropped from the alignment, for example by an earlier filtering step.
+
 The files use standard, reference-based CRAM with four extra tags:
 `YB/YQ` and `ZB/ZQ`. The tools run independently of the original analysis pipeline.
 See [how the tags work](docs/format.md) for details.
@@ -35,11 +38,11 @@ also keeping the alignments. Compression depends on the data. See the
 
 1. **Prepare the inputs:** original paired FASTQs, their alignments and the
    matching reference FASTA.
-2. **[Create a CRAM](#create-a-verified-cram):** add the trimmed read data and
+2. **[Create a CRAM](#create-a-cram):** add the trimmed read data and
    write files named after your sample.
 3. **[Check against the original FASTQs](#verify-that-a-cram-preserves-the-original-fastq-reads):**
    compare the recovered read information with the originals. Creation runs this
-   check automatically; saved checksums let you repeat it later.
+   check by default; saved checksums let you repeat it later.
 4. **[Restore FASTQs](#restore-paired-fastqs):** recover paired reads for a new
    analysis whenever you need them.
 
@@ -71,7 +74,7 @@ The optional original C checksum extension can be built with `make native-check`
 It requires setuptools and Python development headers; see
 [advanced use](docs/advanced.md) for its interface and limitations.
 
-## Create a verified CRAM
+## Create a CRAM
 
 Supply the alignment, the **original untrimmed FASTQs** and the matching reference.
 If reads were trimmed before alignment, this command supports trimming from the
@@ -101,6 +104,13 @@ python scripts/create_cram.py \
 
 The alignment can be SAM, BAM or CRAM. FASTQs can be plain or gzip compressed.
 The tool groups alignment records by read name automatically.
+Encoding currently uses samtools' default CRAM settings; it does not select
+the CRAM 3.1 `archive` profile used in the storage comparison above.
+
+Read pairs missing entirely from the alignment are re-added from the original
+FASTQs as unmapped reads marked as QC-failed. The restore command includes these
+pairs, so reads dropped by an earlier filter can be recovered too. This does not
+repair a pair with only one mate missing from the alignment.
 
 `--output-prefix` (or `-o`) sets the name used for every output file:
 
@@ -110,19 +120,30 @@ The tool groups alignment records by read name automatically.
 Multiple samples can share the same folder by using different prefixes. Existing
 output files are never overwritten.
 
-Before making the outputs available, the tool reads back the complete CRAM and
-checks its reconstructed reads against the original FASTQs. Add
+By default, the tool reads back the complete CRAM and checks its reconstructed
+reads against the original FASTQs before making the outputs available. Add
 `--quality-mode strict` to require exact quality matches; the default `pipeline`
 mode allows the differences described in the verification section below.
+
+Add **`--fast`** to the creation command to skip the separate FASTQ checksum pass
+and the final comparison. The original FASTQs are still read to add the tags and
+recover dropped pairs. Sorting, indexing and `samtools quickcheck` still run,
+but they do not establish that the CRAM preserves the original reads.
+
+With `--fast`, the tool omits `.fastq.stats.json` and `.verification.json` and
+records `"verification": "skipped"` in `.creation.json`. Normal creation records
+`"verification": "passed"`. `--quality-mode` has no effect in fast mode. To verify
+later, use the [comparison commands below](#verify-that-a-cram-preserves-the-original-fastq-reads)
+with the original FASTQs.
 
 | Output | Contents |
 | --- | --- |
 | `SAMPLE001.cram`, `SAMPLE001.cram.crai` | Tagged alignment, sorted by position, and its index |
-| `SAMPLE001.fastq.stats.json` | Checksums and counts from the original FASTQs, for future comparisons |
-| `SAMPLE001.verification.json` | Results of the comparison between the CRAM and original FASTQs |
+| `SAMPLE001.fastq.stats.json` | Checksums and counts from the original FASTQs; omitted with `--fast` |
+| `SAMPLE001.verification.json` | Results of the comparison between the CRAM and original FASTQs; omitted with `--fast` |
 | `SAMPLE001.merge.stats.tsv` | Statistics on the added read data |
 | `SAMPLE001.badmap_R1.fastq.gz`, `SAMPLE001.badmap_R2.fastq.gz` | A diagnostic subset of poorly aligned reads |
-| `SAMPLE001.creation.json` | Sample name, software versions and settings; written last to mark completion |
+| `SAMPLE001.creation.json` | Sample name, software versions, settings and verification status; written last to mark completion |
 
 Keep the exact reference FASTA and its `.fai` index with your archive or in a
 reliable reference store. They are needed to read the CRAM. The `badmap` files are
@@ -167,8 +188,8 @@ modes check read sequences and names, but neither compares FASTQ comments,
 original ordering or gzip bytes. See [validation](docs/validation.md) for the full
 comparison rules and checksum limitations.
 
-Creation already saves `SAMPLE001.fastq.stats.json` from the original FASTQs.
-You can use it with `--stats` to check the CRAM again without rereading the
+Creation without `--fast` already saves `SAMPLE001.fastq.stats.json` from the
+original FASTQs. You can use it with `--stats` to check the CRAM again without rereading the
 originals. The saved file also records which quality policy to apply.
 
 The `check` command returns **0 for a match, 1 for a mismatch and 2 for an input
