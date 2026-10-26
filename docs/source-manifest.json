@@ -1,0 +1,52 @@
+{
+  "source_repository": "short_read_analyzing_pipeline_Snakemake",
+  "source_head": "a80d95c09231752069f209978e6a2f789db06a2e",
+  "extracted_on": "2026-10-26",
+  "files": [
+    {
+      "path": "scripts/bam_merge.c",
+      "source_sha256": "0de7956179034eeb691c48763c53d1f96baced001dd3494e9e2ab4cdf53efbd8",
+      "source_worktree_modified": true
+    },
+    {
+      "path": "scripts/bam_dechimer.c",
+      "source_sha256": "fd063b98ea535aa01f291a36aa39ce02ebd11840e3441856ef3048fbbe4ab588",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "scripts/bam_revert.py",
+      "source_sha256": "11dab4a0aa20cf4944a24d93d2fd49c6278119151c9af10c72ba3ff92079e28a",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "scripts/fastcheck.c",
+      "source_sha256": "d1ba52105c7980fe76946d98bb29dcdeb69f1178c023f21c7ebd9e05417c09f2",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "scripts/setup.py",
+      "source_sha256": "938f74e798df312c6f915c15f6d8124538cd0db0acbf3365a8e1f53af6cbce19",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "scripts/fastcheck_loader.py",
+      "source_sha256": "466dbaca0e359de623c585fb8f2faa86803977b329dfd9c3c91d59dfcef8de6d",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "scripts/hash_utils.py",
+      "source_sha256": "1e327782779d6bc96e3ecfea8f2c131eb0278456464206f9377129f996e9c02c",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "tests/test_bam_revert.py",
+      "source_sha256": "5aadd979d99c31ba963e40efe1851b02cb643aa457c1eeb662e3a213d117df50",
+      "source_worktree_modified": false
+    },
+    {
+      "path": "tests/test_fastcheck.py",
+      "source_sha256": "fd930e90acfabc795d09e7bf9ad4216a5fbcb839c6f26a21ca8f6eca889987c0",
+      "source_worktree_modified": false
+    }
+  ]
+}

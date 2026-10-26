@@ -1,0 +1,12 @@
+name: cram-roundtrip
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - samtools>=1.17
+  - pigz
+  - zlib
+  - c-compiler
+  - make
+  - setuptools

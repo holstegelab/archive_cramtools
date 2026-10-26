@@ -1,0 +1,9 @@
+This project contains code extracted from the Holstege lab's
+short_read_analyzing_pipeline_Snakemake repository, plus standalone adaptations.
+The source provenance is recorded in docs/provenance.md and
+docs/source-manifest.json.
+
+No repository-wide license file was present in the inspected source checkout.
+This extraction does not assign a new license or change ownership of that code.
+A redistribution/open-source license should be chosen by the rights holder
+before a public release. Dependencies retain their own licenses.

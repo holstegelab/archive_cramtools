@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+scripts/build/
+scripts/bam_merge
+scripts/bam_dechimer
+demo-output/
+*.cram
+*.crai
+*.bam
+*.bai
+*.fastq.gz
+*.fq.gz
+*.fa.fai
