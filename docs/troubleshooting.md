@@ -6,7 +6,8 @@
 | `zlib.h` missing while building | Install zlib development headers, or use the supplied conda environment |
 | `Python.h` missing for native checks | Install Python development headers; the primary CLI does not need this extension |
 | Reference mismatch or CRAM decode failure | Supply the exact encoding reference, check contig names/lengths and run `samtools faidx` |
-| Output directory already exists | Choose a new directory; creation deliberately refuses replacement |
+| Output already exists | Choose a new sample prefix; creation refuses to overwrite any of its output files |
+| Output prefix is a directory | Include a sample identifier, for example `--output-prefix results/SAMPLE001` |
 | Very high annotation RAM | Use QNAME-grouped aligner output close to source FASTQ order with `--name-collated`; work per read group |
 | Temporary storage exhausted | Set `--tmp-dir` to sufficient scratch space and tune samtools sort memory/threads |
 | Quality mismatch in strict mode | Inspect aligner quality changes; pipeline mode permits only the documented `#`/`!` and N-base differences |
@@ -19,6 +20,13 @@ Check the process exit code for every command. `samtools quickcheck` alone does
 not read all records; the creation wrapper additionally decodes the complete
 CRAM. For hand-written shell pipelines enable `set -euo pipefail` and run the
 final comparison explicitly.
+
+Creation stages and verifies all outputs before publishing sample-named files.
+Each file is published without overwriting an existing path; publication is not
+a transaction spanning all files. The `.creation.json` completion record is
+published last. If publication fails, the tool removes files it just published.
+An abrupt termination or system failure can leave an incomplete set without
+that completion record; inspect those files before rerunning the same prefix.
 
 Reversion collates internally unless `--name-collated` is supplied. Set `TMPDIR`
 to a suitable directory for its samtools temporary files. The two FASTQ files and

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "examples"))
 from fastq_check import alignment_stats, comparison, fastq_stats, load_stats
 from roundtrip import make_inputs
+from create_cram import publish_outputs
 
 
 class RoundtripTests(unittest.TestCase):
@@ -33,11 +34,13 @@ class RoundtripTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def create(self, extra=(), success=True):
+    def create(self, extra=(), success=True, prefix=None):
+        if prefix is None:
+            prefix = self.directory / "SAMPLE001"
         cmd = [sys.executable, str(ROOT / "scripts/create_cram.py"), "--input", str(self.directory / "aligned.sam"),
                "--f1", str(self.f1), "--f2", str(self.f2), "--reference", str(self.reference),
-               "--output-dir", str(self.directory / "stored"), "--threads", "1", "--quality-mode", "strict", *extra]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+               "--output-prefix", str(prefix), "--threads", "1", "--quality-mode", "strict", *extra]
+        result = subprocess.run(cmd, cwd=self.directory, capture_output=True, text=True)
         if success:
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
@@ -46,9 +49,9 @@ class RoundtripTests(unittest.TestCase):
 
     def test_create_cram_revert_and_compare_payloads(self):
         self.create()
-        cram = self.directory / "stored/reads.cram"
+        cram = self.directory / "SAMPLE001.cram"
         self.assertTrue(Path(str(cram) + ".crai").is_file())
-        report = json.loads((self.directory / "stored/verification.json").read_text())
+        report = json.loads((self.directory / "SAMPLE001.verification.json").read_text())
         self.assertTrue(report["match"])
         self.assertEqual(report["observed"]["mates"][0]["reads"], 3)
         restored = [self.directory / f"restored_R{i}.fastq.gz" for i in (1, 2)]
@@ -74,7 +77,8 @@ class RoundtripTests(unittest.TestCase):
     def test_reject_truncated_fastq_without_publishing(self):
         self.f1.write_text(self.f1.read_text().rsplit("\n", 2)[0] + "\n")
         self.create(success=False)
-        self.assertFalse((self.directory / "stored").exists())
+        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [])
+        self.assertEqual(list(self.directory.glob(".SAMPLE001.*")), [])
 
     def test_reject_mismatched_mate_counts(self):
         self.f2.write_text(self.f2.read_text() + "@extra/2\nAC\n+\nII\n")
@@ -95,17 +99,67 @@ class RoundtripTests(unittest.TestCase):
         stats = self.directory / "expected.json"
         stats.write_text(json.dumps(fastq_stats(self.f1, self.f2, "strict")))
         result = subprocess.run([sys.executable, str(ROOT / "scripts/fastq_check.py"), "check", "--stats", str(stats),
-                                 "-i", str(self.directory / "stored/reads.cram"), "-T", str(self.reference)], capture_output=True, text=True)
+                                 "-i", str(self.directory / "SAMPLE001.cram"), "-T", str(self.reference)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("Mismatch", result.stdout)
 
-    def test_existing_output_directory_is_untouched(self):
-        output = self.directory / "stored"
-        output.mkdir()
-        sentinel = output / "keep"
+    def test_existing_sidecar_is_untouched(self):
+        sentinel = self.directory / "SAMPLE001.verification.json"
         sentinel.write_text("unchanged")
         self.create(success=False)
         self.assertEqual(sentinel.read_text(), "unchanged")
+        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [sentinel])
+
+    def test_sample_prefix_is_used_for_every_output(self):
+        self.create(prefix="SAMPLE.v1")
+        expected = {
+            "SAMPLE.v1.cram", "SAMPLE.v1.cram.crai", "SAMPLE.v1.fastq.stats.json",
+            "SAMPLE.v1.verification.json", "SAMPLE.v1.merge.stats.tsv",
+            "SAMPLE.v1.badmap_R1.fastq.gz", "SAMPLE.v1.badmap_R2.fastq.gz",
+            "SAMPLE.v1.creation.json",
+        }
+        self.assertEqual({p.name for p in self.directory.glob("SAMPLE.v1.*")}, expected)
+        creation = json.loads((self.directory / "SAMPLE.v1.creation.json").read_text())
+        self.assertEqual(creation["sample"], "SAMPLE.v1")
+        self.assertEqual(list(self.directory.glob(".SAMPLE.v1.*")), [])
+
+    def test_two_samples_share_an_existing_results_directory(self):
+        results = self.directory / "results"
+        results.mkdir()
+        self.create(prefix=results / "sampleA")
+        first = {p.name: p.read_bytes() for p in results.iterdir()}
+        self.create(prefix=results / "sampleB")
+        self.assertEqual(len(list(results.iterdir())), 16)
+        for name, data in first.items():
+            self.assertEqual((results / name).read_bytes(), data)
+        self.assertTrue((results / "sampleB.creation.json").is_file())
+
+    def test_broken_symlink_output_is_not_overwritten(self):
+        target = self.directory / "SAMPLE001.cram.crai"
+        target.symlink_to(self.directory / "missing")
+        self.create(success=False)
+        self.assertTrue(target.is_symlink())
+        self.assertFalse((self.directory / "SAMPLE001.cram").exists())
+
+    def test_directory_is_rejected_as_a_sample_prefix(self):
+        for prefix in (".", str(self.directory) + "/", str(self.directory)):
+            with self.subTest(prefix=prefix):
+                result = self.create(prefix=prefix, success=False)
+                self.assertIn("sample filename prefix", result.stderr)
+
+    def test_publication_collision_rolls_back_new_files(self):
+        stage = self.directory / "stage"
+        stage.mkdir()
+        staged = {"cram": stage / "sample.cram", "index": stage / "sample.cram.crai"}
+        destinations = {key: self.directory / path.name for key, path in staged.items()}
+        for path in staged.values():
+            path.write_bytes(b"new data")
+        destinations["index"].write_bytes(b"concurrent writer")
+        with self.assertRaises(FileExistsError):
+            publish_outputs(staged, destinations)
+        self.assertFalse(destinations["cram"].exists())
+        self.assertEqual(destinations["index"].read_bytes(), b"concurrent writer")
+        self.assertTrue(all(path.is_file() for path in staged.values()))
 
     def test_missing_restore_tag_fails(self):
         sam = self.directory / "broken.sam"
@@ -133,7 +187,8 @@ class RoundtripTests(unittest.TestCase):
         self.f2.write_text(self.f2.read_text().replace("pairA", "different"))
         result = self.create(success=False)
         self.assertIn("Restored CRAM differs", result.stderr)
-        self.assertFalse((self.directory / "stored").exists())
+        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [])
+        self.assertEqual(list(self.directory.glob(".SAMPLE001.*")), [])
 
     def test_corrupt_gzip_is_rejected(self):
         broken = self.directory / "broken.fastq.gz"
@@ -142,14 +197,15 @@ class RoundtripTests(unittest.TestCase):
         broken.write_bytes(data)
         self.f1 = broken
         self.create(success=False)
-        self.assertFalse((self.directory / "stored").exists())
+        self.assertEqual(list(self.directory.glob("SAMPLE001.*")), [])
+        self.assertEqual(list(self.directory.glob(".SAMPLE001.*")), [])
 
     def test_truncated_cram_is_an_error(self):
         self.create()
-        cram = self.directory / "stored/reads.cram"
+        cram = self.directory / "SAMPLE001.cram"
         cram.write_bytes(cram.read_bytes()[:100])
         result = subprocess.run([sys.executable, str(ROOT / "scripts/fastq_check.py"), "check",
-                                 "--stats", str(self.directory / "stored/fastq.stats.json"),
+                                 "--stats", str(self.directory / "SAMPLE001.fastq.stats.json"),
                                  "-i", str(cram), "-T", str(self.reference)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertNotIn("Match", result.stdout)

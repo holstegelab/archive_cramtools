@@ -34,7 +34,7 @@ Trailing whitespace in the extracted C annotation/clipping sources was normalize
   malformed numeric fields as CLI errors.
 - New `create_cram.py`: checks original FASTQs, groups input names if needed,
   invokes the C annotator and samtools, fully decodes/checks the finished CRAM,
-  then publishes a new directory containing the CRAM, index and reports.
+  then publishes the CRAM, index and reports with a sample filename prefix.
 - New `fastq_check.py`: streaming input validation and name/mate-aware SHA-256
   sums with explicit pipeline/strict quality modes. This is an addition to, not
   a byte-compatible replacement for, the historic FNV-1a XOR format.

@@ -60,7 +60,7 @@ native quality-buffer boundary are retained.
 
 ## Verification coverage
 
-The local verification on 2026-10-26 passed all 22 tests and the complete synthetic
+The local verification on 2026-10-26 passed the test suite and the complete synthetic
 demo with Python 3.12.3 and samtools/HTSlib 1.17.
 
 `make test` runs integration tests using synthetic data. Tests cover actual CRAM
@@ -69,7 +69,9 @@ payloads, re-adding fully filtered pairs, ignoring secondary/supplementary
 records, duplicate names in separate RGs during reversion, compressed/plain
 FASTQs, filenames with spaces/apostrophes, checks of read identity and quality
 mode, malformed input, missing tags, failed samtools execution and preservation
-of existing output. `make test` requires the external tools and fails if they
+of existing output. Sample-prefix tests cover multiple samples in a shared
+directory, existing sidecars, broken symlinks and rollback on publication conflicts.
+`make test` requires the external tools and fails if they
 are missing.
 
 These tests demonstrate the included examples and contracts. They are not a

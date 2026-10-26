@@ -1,26 +1,51 @@
 # CRAM roundtrip
 
-Store aligned paired reads together with the bases and qualities removed during
-trimming, then reconstruct paired FASTQs from the resulting CRAM. This repository
-extracts the tag annotation, restoration and checksum code from the Holstege lab's
-`short_read_analyzing_pipeline_Snakemake` project.
+Keep alignments and recoverable read data together in one CRAM file. This tool
+stores bases and quality scores removed by trimming in extra SAM tags, so paired
+FASTQs can be reconstructed later.
 
-The storage format is ordinary, reference-based CRAM with four custom SAM tags:
-`YB/YQ` for a removed prefix and `ZB/ZQ` for a removed suffix, expressed in the
-alignment's orientation. The underlying C annotation code and optional clipping
-code are included, as is the original native FASTQ checksum implementation.
-No Snakemake, scheduler, storage service or lab configuration is required.
+The files use standard, reference-based CRAM with four extra tags:
+`YB/YQ` and `ZB/ZQ`. The tools run independently of the original analysis pipeline.
+See [how the tags work](docs/format.md) for details.
 
-**Restoration recovers read payloads, not byte-identical original FASTQ files.**
-Order, header comments, plus-line comments and gzip metadata are not retained.
-The default validation mode accepts the lab pipeline's quality normalization;
-use `--quality-mode strict` to require exact stored qualities. See
-[validation](docs/validation.md) for the precise guarantees.
+Recovery restores the read sequences and quality scores stored in the CRAM and
+its tags. Original read order, FASTQ comments and gzip metadata are not preserved.
+Quality scores changed by an aligner cannot always be recovered exactly. The
+verification commands below let you check this against the original FASTQs.
+
+## Motivation
+
+FASTQs are often kept so reads can be analysed again with a different aligner or
+reference. Keeping both the FASTQs and the alignments takes up substantial
+storage. A CRAM that also preserves the trimmed read data can serve both purposes.
+
+We compared original gzipped FASTQs with matching files from our **CRAM 3.1
+`archive`** workflow. The CRAM totals include encryption and indexes.
+
+| Data | Samples | Original FASTQ.gz | CRAM archives + indexes | Less storage |
+| --- | ---: | ---: | ---: | ---: |
+| Whole-exome (WES) | 1,000 | 3.312 TB | 0.819 TB | **75.3%** |
+| Whole-genome (WGS) | 448 | 23.222 TB | 4.300 TB | **81.5%** |
+
+This saves **2.493 TB** for the exomes and **18.922 TB** for the genomes, while
+also keeping the alignments. Compression depends on the data. See the
+[storage comparison](docs/storage-comparison.md) for the measurements and method.
+
+## Outline
+
+1. **Prepare the inputs:** original paired FASTQs, their alignments and the
+   matching reference FASTA.
+2. **[Create a CRAM](#create-a-verified-cram):** add the trimmed read data and
+   write files named after your sample.
+3. **[Check against the original FASTQs](#verify-that-a-cram-preserves-the-original-fastq-reads):**
+   compare the recovered read information with the originals. Creation runs this
+   check automatically; saved checksums let you repeat it later.
+4. **[Restore FASTQs](#restore-paired-fastqs):** recover paired reads for a new
+   analysis whenever you need them.
 
 ## Install and test
 
-Linux/POSIX, Python 3.10+, samtools 1.17+, pigz, a C compiler, make and zlib headers
-are required. Python's standard library is sufficient for the main commands.
+The easiest setup is the supplied conda environment:
 
 ```bash
 conda env create -f environment.yml
@@ -30,113 +55,156 @@ make test
 make demo
 ```
 
-Alternatively install those dependencies yourself and run `make`. If headers or
-libraries are outside the compiler's default search path, pass `CPPFLAGS` and
-`LDFLAGS` to make. The optional native checksum extension needs Python development
-headers and setuptools: `make native-check`.
+You can also install the dependencies yourself: Linux/POSIX, Python 3.10+,
+samtools 1.17+, pigz, a C compiler, make and zlib development headers. Then run
+`make`. The main Python commands need no additional Python packages.
 
-`make demo` generates three tiny synthetic read pairs and a synthetic reference
-in `demo-output/`, stores a CRAM, restores FASTQs and compares their names, mate
-numbers, sequences and exact qualities. It includes forward/reverse alignments,
-unmapped reads, supplementary/secondary alignments, and a pair absent from the
-alignment. It refuses to reuse an existing demo directory. To choose another:
+`make demo` creates three small, synthetic read pairs and a reference in
+`demo-output/`. It creates a CRAM, restores the FASTQs and checks that the read
+names, sequences and qualities match. To run the demo in a different, new folder:
 
 ```bash
-python examples/roundtrip.py --output-dir /tmp/my-cram-demo
+python examples/roundtrip.py --work-dir /tmp/my-cram-demo
 ```
+
+The optional original C checksum extension can be built with `make native-check`.
+It requires setuptools and Python development headers; see
+[advanced use](docs/advanced.md) for its interface and limitations.
 
 ## Create a verified CRAM
 
-Start with an alignment produced from 3′-trimmed reads, plus the **original,
-untrimmed** paired FASTQs. Creation handles one read group per invocation.
-Sequences must be uppercase A/C/G/T/N and qualities must be Phred+33. R1 and R2
-must have matching names in the same order; each pair name must be unique within
-that read group. Existing restoration tags and arbitrary internal/5′ trimming
-are not supported inputs for annotation. See [the format contract](docs/format.md).
+Supply the alignment, the **original untrimmed FASTQs** and the matching reference.
+If reads were trimmed before alignment, this command supports trimming from the
+**3′ end** only.
+
+The inputs must meet these requirements:
+
+- Process one read group at a time, with a unique name for each read pair.
+- R1 and R2 must contain matching read names in the same order.
+- Sequences must use uppercase A/C/G/T/N and qualities must use Phred+33 encoding.
+- The alignment must not already contain the restoration tags.
+
+See [supported inputs](docs/format.md) for details, or
+[advanced use](docs/advanced.md#encode-existing-tagged-alignments) to encode an
+alignment that already has the tags.
 
 ```bash
 samtools faidx reference.fa
 
 python scripts/create_cram.py \
-  --input aligned.bam \
-  --f1 original_R1.fastq.gz --f2 original_R2.fastq.gz \
+  --input SAMPLE001.aligned.bam \
+  --f1 SAMPLE001_R1.fastq.gz --f2 SAMPLE001_R2.fastq.gz \
   --reference reference.fa \
-  --output-dir stored_reads \
+  --output-prefix SAMPLE001 \
   --threads 4
 ```
 
-SAM, BAM or CRAM input is accepted, with an explicit reference. FASTQs can be
-plain or gzip compressed. Input is grouped by QNAME automatically. For aligner
-output already grouped by QNAME and close to FASTQ order, add `--name-collated`;
-this can substantially reduce the annotation step's memory use.
+The alignment can be SAM, BAM or CRAM. FASTQs can be plain or gzip compressed.
+The tool groups alignment records by read name automatically.
 
-The new output directory appears only after the final CRAM has been fully decoded,
-its reconstructed payload checked against the source FASTQs, and its index built.
-Existing output directories are refused. Input files are never edited.
+`--output-prefix` (or `-o`) sets the name used for every output file:
 
-| Output | Purpose |
+- `--output-prefix SAMPLE001` writes files in the current directory.
+- `--output-prefix results/SAMPLE001` writes them in an existing `results/` folder.
+
+Multiple samples can share the same folder by using different prefixes. Existing
+output files are never overwritten.
+
+Before making the outputs available, the tool reads back the complete CRAM and
+checks its reconstructed reads against the original FASTQs. Add
+`--quality-mode strict` to require exact quality matches; the default `pipeline`
+mode allows the differences described in the verification section below.
+
+| Output | Contents |
 | --- | --- |
-| `reads.cram`, `reads.cram.crai` | Coordinate-sorted tagged alignment and index |
-| `fastq.stats.json` | Expected read-payload digests; retain for later checks |
-| `verification.json` | Expected/observed counts, base totals and digests |
-| `merge.stats.tsv` | Original annotation statistics |
-| `badmap_R1.fastq.gz`, `badmap_R2.fastq.gz` | Original annotator's diagnostic FASTQs for poorly aligned reads |
-| `creation.json` | Tool version, samtools version and creation settings |
+| `SAMPLE001.cram`, `SAMPLE001.cram.crai` | Tagged alignment, sorted by position, and its index |
+| `SAMPLE001.fastq.stats.json` | Checksums and counts from the original FASTQs, for future comparisons |
+| `SAMPLE001.verification.json` | Results of the comparison between the CRAM and original FASTQs |
+| `SAMPLE001.merge.stats.tsv` | Statistics on the added read data |
+| `SAMPLE001.badmap_R1.fastq.gz`, `SAMPLE001.badmap_R2.fastq.gz` | A diagnostic subset of poorly aligned reads |
+| `SAMPLE001.creation.json` | Sample name, software versions and settings; written last to mark completion |
 
-The `badmap` files are diagnostics, not complete restored FASTQs. Keep the exact
-reference FASTA and its `.fai` with your archive or in a durable reference store;
-the output directory does not copy them.
+Keep the exact reference FASTA and its `.fai` index with your archive or in a
+reliable reference store. They are needed to read the CRAM. The `badmap` files are
+only a diagnostic subset; use the restore command below to recover all read pairs.
 
-For large datasets use `--tmp-dir /scratch/path` and tune `--sort-memory 768M`
-(per samtools sort thread). The Python checks are streaming and use bounded
-memory. The inherited annotation lookup can buffer many original FASTQs when
-alignment and FASTQ order differ; `--sort-memory` does not limit that buffer.
+For large datasets, `--tmp-dir /scratch/path` chooses where sorting uses temporary
+space. `--sort-memory 768M` sets memory per sorting thread. If the alignment is
+already grouped by read name, `--name-collated` skips regrouping. Keeping that
+order close to the FASTQ order can reduce memory use when adding tags; this step
+has a separate memory buffer that `--sort-memory` does not limit.
 
-## Restore paired FASTQs
+## Verify that a CRAM preserves the original FASTQ reads
 
-```bash
-python scripts/bam_revert.py \
-  --input stored_reads/reads.cram --reference reference.fa \
-  --f1 restored_R1.fastq.gz --f2 restored_R2.fastq.gz \
-  --stats restored.stats.tsv --threads 4
-```
+Use this check to confirm that the CRAM preserves the read information from the
+**original paired FASTQs**. It reconstructs reads using the extra tags and compares their
+names, mate numbers, sequences and qualities with the originals. It also checks
+read counts and total numbers of bases. Checksums allow the comparison to work
+even when the read order has changed.
 
-Reversion automatically collates records, uses primary alignments, restores the
-tags and reverses strand orientation. It requires exactly one primary R1 and R2
-per `(QNAME, RG)` group. `--include-read-group-in-name` writes `QNAME:RG/1` and
-`QNAME:RG/2`, useful when names recur across read groups. That option changes the
-names compared by the standalone checksum tool. Without it the names are
-`QNAME/1` and `QNAME/2`. Output files are gzip compressed regardless of suffix.
-
-## Verify an existing CRAM
-
-Save expected statistics once, while original FASTQs are available:
+First calculate checksums from the original FASTQs, then check the CRAM against
+them:
 
 ```bash
 python scripts/fastq_check.py stats \
-  --f1 original_R1.fastq.gz --f2 original_R2.fastq.gz \
-  --quality-mode strict --output original.stats.json
+  --f1 SAMPLE001_R1.fastq.gz --f2 SAMPLE001_R2.fastq.gz \
+  --quality-mode strict --output SAMPLE001.original.fastq.stats.json
 
 python scripts/fastq_check.py check \
-  --input stored_reads/reads.cram --reference reference.fa \
-  --stats original.stats.json --report comparison.json
+  --input SAMPLE001.cram --reference reference.fa \
+  --stats SAMPLE001.original.fastq.stats.json --report SAMPLE001.comparison.json
 ```
 
-Or use `stored_reads/fastq.stats.json`, which creation already saved. `check`
-returns **0 for a match, 1 for a mismatch, 2 for an input/tool error**. A failed
-read never produces a successful result. A JSON report is written for completed
-comparisons, including mismatches; on an input error an older report is left
-untouched, so always check the exit status. Reversion and creation return nonzero
-on failure. Run `--help` on each script for all options.
+Choose the quality policy when calculating the FASTQ checksums:
+
+| Mode | What it checks |
+| --- | --- |
+| `strict` | Quality values must match exactly. |
+| `pipeline` (default) | Treats `#` and `!` qualities as equivalent and ignores quality differences at `N` bases. |
+
+A match in `pipeline` mode can therefore still include quality differences. Both
+modes check read sequences and names, but neither compares FASTQ comments,
+original ordering or gzip bytes. See [validation](docs/validation.md) for the full
+comparison rules and checksum limitations.
+
+Creation already saves `SAMPLE001.fastq.stats.json` from the original FASTQs.
+You can use it with `--stats` to check the CRAM again without rereading the
+originals. The saved file also records which quality policy to apply.
+
+The `check` command returns **0 for a match, 1 for a mismatch and 2 for an input
+or tool error**. The JSON report describes a completed comparison, including any
+mismatch. If the command fails before completing the comparison, an older report
+may remain, so always check the exit status.
+
+## Restore paired FASTQs
+
+Use the supplied restore command to put the tagged bases and quality scores back
+into the reads:
+
+```bash
+python scripts/bam_revert.py \
+  --input SAMPLE001.cram --reference reference.fa \
+  --f1 SAMPLE001.restored_R1.fastq.gz --f2 SAMPLE001.restored_R2.fastq.gz \
+  --stats SAMPLE001.revert.stats.tsv --threads 4
+```
+
+The script groups mates by read name and read group, restores the trimmed pieces
+and returns reads to their original orientation. It requires one primary R1 and
+one primary R2 for each pair. Both output FASTQs are gzip compressed.
+
+If read names repeat across read groups, add `--include-read-group-in-name`.
+This writes names such as `readname:readgroup/1` and `readname:readgroup/2`, so the
+groups remain distinguishable. Those added read-group names also affect later
+comparisons with the original FASTQs.
 
 ## Further documentation
 
-- [Tag format, orientation and supported inputs](docs/format.md)
-- [Checksum algorithms, quality policies and limitations](docs/validation.md)
-- [Low-level commands and optional clipping](docs/advanced.md)
+- [Tag format and supported inputs](docs/format.md)
+- [Checksums, quality policies and limitations](docs/validation.md)
+- [Advanced use and optional clipping](docs/advanced.md)
 - [Source provenance and standalone changes](docs/provenance.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
-This repository contains source code and synthetic examples only. There is no
-bundled human sequencing data, encryption key or reference genome. Licensing
+Run the commands above with `--help` for their options. This repository includes synthetic
+examples; it contains no human sequencing data or reference genome. Licensing
 status is recorded in [NOTICE](NOTICE).

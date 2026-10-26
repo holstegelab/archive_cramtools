@@ -37,22 +37,22 @@ def make_inputs(directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="demo-output")
+    parser.add_argument("--work-dir", default="demo-output", help="new directory for synthetic inputs and demo results")
     args = parser.parse_args()
-    directory = Path(args.output_dir).resolve()
+    directory = Path(args.work_dir).resolve()
     directory.mkdir(parents=True, exist_ok=False)
     make_inputs(directory)
     subprocess.run(["samtools", "faidx", str(directory / "reference.fa")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/create_cram.py"),
                     "--input", str(directory / "aligned.sam"), "--f1", str(directory / "original_R1.fastq"),
                     "--f2", str(directory / "original_R2.fastq"), "--reference", str(directory / "reference.fa"),
-                    "--quality-mode", "strict", "--threads", "1", "--output-dir", str(directory / "stored")], check=True)
+                    "--quality-mode", "strict", "--threads", "1", "--output-prefix", str(directory / "DEMO")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/bam_revert.py"),
-                    "--input", str(directory / "stored/reads.cram"), "--reference", str(directory / "reference.fa"),
-                    "--f1", str(directory / "restored_R1.fastq.gz"), "--f2", str(directory / "restored_R2.fastq.gz"),
-                    "--stats", str(directory / "revert.stats.tsv"), "--threads", "1"], check=True)
+                    "--input", str(directory / "DEMO.cram"), "--reference", str(directory / "reference.fa"),
+                    "--f1", str(directory / "DEMO.restored_R1.fastq.gz"), "--f2", str(directory / "DEMO.restored_R2.fastq.gz"),
+                    "--stats", str(directory / "DEMO.revert.stats.tsv"), "--threads", "1"], check=True)
     expected = fastq_stats(directory / "original_R1.fastq", directory / "original_R2.fastq", "strict")
-    restored = fastq_stats(directory / "restored_R1.fastq.gz", directory / "restored_R2.fastq.gz", "strict")
+    restored = fastq_stats(directory / "DEMO.restored_R1.fastq.gz", directory / "DEMO.restored_R2.fastq.gz", "strict")
     if restored != expected:
         raise RuntimeError("Restored FASTQs differ from originals")
     print(f"PASS: all 3 synthetic pairs restored, including qualities. Files: {directory}")
