@@ -90,8 +90,21 @@ def fastq_stats(f1, f2, mode="pipeline"):
         inputs[0].st_dev, inputs[0].st_ino
     ) == (inputs[1].st_dev, inputs[1].st_ino):
         raise ValueError("R1 and R2 must use separate input pipes")
+    return paired_stats(zip_longest(read_fastq(f1), read_fastq(f2)), mode)
+
+
+def fastq_stats_interleaved(path="-", mode="pipeline"):
+    """Check alternating R1/R2 records from one FASTQ file or input stream."""
+    reads = read_fastq(path)
+    try:
+        return paired_stats(zip_longest(reads, reads), mode)
+    finally:
+        reads.close()
+
+
+def paired_stats(pairs, mode):
     stats = empty_stats(mode)
-    for r1, r2 in zip_longest(read_fastq(f1), read_fastq(f2)):
+    for r1, r2 in pairs:
         if r1 is None or r2 is None:
             raise ValueError("R1 and R2 have different numbers of records")
         if r1[0] != r2[0]:
@@ -177,8 +190,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="Validate paired FASTQs and save expected payload digests")
-    stats_parser.add_argument("--f1", required=True, help="R1 FASTQ[.gz]: file, pipe, or - for stdin")
-    stats_parser.add_argument("--f2", required=True, help="R2 FASTQ[.gz]: file, pipe, or - for stdin (at most one mate)")
+    stats_parser.add_argument("--f1", help="R1 FASTQ[.gz]: file, pipe, or - for stdin")
+    stats_parser.add_argument("--f2", help="R2 FASTQ[.gz]: file, pipe, or - for stdin (at most one mate)")
+    stats_parser.add_argument("--interleaved", action="store_true",
+                              help="read alternating R1/R2 records from one input stream instead of --f1/--f2")
+    stats_parser.add_argument("--input", help="interleaved FASTQ[.gz] file or pipe; default: stdin (requires --interleaved)")
     stats_parser.add_argument("--quality-mode", choices=("pipeline", "strict"), default="pipeline")
     stats_parser.add_argument("-o", "--output", required=True)
     check_parser = commands.add_parser("check", help="Compare restored primary reads with expected digests")
@@ -189,10 +205,21 @@ def main(argv=None):
     check_parser.add_argument("--samtools", default="samtools")
     check_parser.add_argument("--threads", type=int, default=2)
     args = parser.parse_args(argv)
+    if args.command == "stats":
+        if args.interleaved:
+            if args.f1 is not None or args.f2 is not None:
+                parser.error("--interleaved cannot be combined with --f1 or --f2")
+        elif not args.f1 or not args.f2 or args.input is not None:
+            parser.error("provide both --f1 and --f2, or use --interleaved [--input PATH]")
     try:
         if args.command == "stats":
-            protect_output(args.output, [args.f1, args.f2])
-            stats = fastq_stats(args.f1, args.f2, args.quality_mode)
+            if args.interleaved:
+                source = args.input if args.input is not None else "-"
+                protect_output(args.output, [source])
+                stats = fastq_stats_interleaved(source, args.quality_mode)
+            else:
+                protect_output(args.output, [args.f1, args.f2])
+                stats = fastq_stats(args.f1, args.f2, args.quality_mode)
             write_json(args.output, stats)
             print(f"Validated {stats['mates'][0]['reads']} read pairs", file=sys.stderr)
             return 0

@@ -43,7 +43,10 @@ Trailing whitespace in the extracted C annotation/clipping sources was normalize
   sums with explicit pipeline/strict quality modes. This is an addition to, not
   a byte-compatible replacement for, the historic FNV-1a XOR format.
   Reads plain/gzip FASTQ files or pipes in one pass, with stdin available for one
-  FASTQ mate or for the alignment being checked.
+  FASTQ mate, an interleaved pair stream or the alignment being checked.
+  `stats --interleaved --input -` follows the input interface used by the original
+  pipeline's `adapter_processing.py` and `fastq_stats.py`; it retains the standalone
+  SHA-256 JSON format and validation rules.
 - New standalone build/environment, integration tests, synthetic demonstration
   and English documentation.
 

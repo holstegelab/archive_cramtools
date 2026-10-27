@@ -1,22 +1,25 @@
 # Streaming inputs
 
 Use pipes to feed data directly from another command without first writing a
-complete input file. These interfaces keep R1 and R2 separate. Outputs keep their
-usual filenames; no interleaving or FASTQ output to stdout is required.
+complete input file. FASTQ checksum calculation accepts either one stream with
+alternating R1/R2 records, as used by the original pipeline, or two separate
+mate streams. Outputs keep their usual filenames.
 
 | Command | Streaming input |
 | --- | --- |
 | `create_cram.py --input -` | SAM, BAM or CRAM on stdin; verification remains enabled by default |
 | `create_cram.py --input alignment.pipe` | SAM, BAM or CRAM from a named pipe |
 | `create_cram.py --fast --f1 R1.pipe --f2 R2.pipe` | Separate original FASTQ streams through named pipes, plain or gzip compressed |
+| `fastq_check.py stats --interleaved --input -` | Both mates on stdin, alternating R1/R2 records, plain or gzip compressed |
 | `fastq_check.py stats --f1 R1.pipe --f2 R2.pipe` | Separate original FASTQ streams, plain or gzip compressed |
 | `fastq_check.py stats --f1 - --f2 R2.fastq.gz` | R1 on stdin and R2 from a file or pipe; the roles can be reversed |
 | `fastq_check.py check --input -` | SAM, BAM or CRAM on stdin, compared with a saved statistics JSON file |
 | `bam_revert.py --input -` | SAM, BAM or CRAM on stdin; the usual two FASTQ.gz outputs remain files |
 
-An input pipe is consumed once and cannot be reused for another command. Each
-FASTQ mate needs its own stream. Never point both mates at the same pipe or pass
-`--f1 - --f2 -`. The reference FASTA and `.fai` index remain regular files.
+An input pipe is consumed once and cannot be reused for another command. With
+`--f1`/`--f2`, each mate needs its own stream: never point them at the same pipe
+or pass `--f1 - --f2 -`. Use `--interleaved` for a single paired FASTQ stream.
+The reference FASTA and `.fai` index remain regular files.
 
 ## Pipe an alignment into creation
 
@@ -49,7 +52,70 @@ then compares them with the finished CRAM. The upstream alignment producer may
 wait while those checksums are calculated. `--fast` skips these checks as it does
 for file input. Neither mode writes an extra copy of the input alignment.
 
-## Calculate checksums from two FASTQ streams
+## Calculate checksums from one paired FASTQ stream
+
+The original pipeline combines the two mates into alternating R1/R2 records and
+uses `tee` to supply that stream to both the checksum reader and adapter
+processing. Its checksum command uses `--interleaved --input -`. The standalone
+command now accepts the same input layout:
+
+```bash
+set -euo pipefail
+pigz -dc SAMPLE001.interleaved.fastq.gz \
+  | python scripts/fastq_check.py stats \
+      --interleaved --input - --quality-mode strict \
+      --output SAMPLE001.original.fastq.stats.json
+```
+
+Each R1 record must be immediately followed by its matching R2 record. Both
+mates are checked, including their names, sequences, qualities, read counts and
+base totals. Incomplete pairs and malformed records fail the command.
+`--input` can also name a plain/gzip file or named pipe; omitting it selects
+stdin. Do not combine `--interleaved` with `--f1` or `--f2`.
+
+This changes only how reads enter the checker. The same standalone SHA-256 JSON
+statistics and quality modes are used for both layouts; this does not switch to
+the original pipeline's legacy checksum format.
+
+### Check the same stream while another command processes it
+
+This follows the pipeline's `tee`/named-pipe arrangement. Here the downstream
+command simply recompresses the reads; replace that final `pigz` command with
+your processing step. No extra uncompressed FASTQ file is created.
+
+```bash
+(
+  set -euo pipefail
+  stream_dir=$(mktemp -d)
+  checker_pid=
+  cleanup_streams() {
+    if [[ -n "$checker_pid" ]]; then
+      kill "$checker_pid" 2>/dev/null || true
+      wait "$checker_pid" 2>/dev/null || true
+    fi
+    rm -rf "$stream_dir"
+  }
+  trap cleanup_streams EXIT
+  mkfifo "$stream_dir/check.pipe"
+
+  python scripts/fastq_check.py stats \
+    --interleaved --input - --quality-mode strict \
+    --output SAMPLE001.original.fastq.stats.json < "$stream_dir/check.pipe" &
+  checker_pid=$!
+
+  pigz -dc SAMPLE001.interleaved.fastq.gz \
+    | tee "$stream_dir/check.pipe" \
+    | pigz > SAMPLE001.forwarded.fastq.gz
+
+  wait "$checker_pid"
+  checker_pid=
+)
+```
+
+`pipefail` checks the main pipeline, and `wait` checks the checksum reader. Both
+must succeed before accepting the outputs.
+
+## Calculate checksums from two separate FASTQ streams
 
 This Bash example uses one named pipe per mate. The two producers run
 concurrently, and their exit codes are checked along with the checksum command.
@@ -103,7 +169,8 @@ failure, discard any result from that run, even if a JSON report exists.
 ## Create using two FASTQ streams
 
 Use the same two-pipe setup above, replacing the `fastq_check.py stats` command
-with:
+with the following command. Creation uses separate FASTQ inputs; the
+`--interleaved` option above belongs to checksum calculation.
 
 ```bash
 python scripts/create_cram.py \

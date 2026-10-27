@@ -12,6 +12,9 @@ The same checks apply to streamed input. FASTQ checksum calculation opens each
 input once and detects gzip without seeking or reopening. R1 and R2 can use
 separate pipes, with at most one mate on stdin. Alignment checking accepts
 SAM/BAM/CRAM on stdin through `--input -`. See [streaming examples](streaming.md).
+For a single stream containing both mates, `stats --interleaved --input -`
+checks consecutive R1/R2 records with the same rules and produces the same JSON
+as `--f1`/`--f2` for the corresponding separate files.
 
 Each read contributes a SHA-256 digest of its normalized name, mate number,
 sequence and quality. Each field is prefixed with its length as an unsigned
@@ -93,6 +96,8 @@ Fast-mode tests cover skipped checksum passes, recovery of dropped pairs,
 verification afterwards, deferred mismatches and rejection of corrupt gzip input.
 Streaming tests cover SAM/BAM/CRAM stdin, named alignment/FASTQ pipes, split gzip
 headers, corrupt or truncated input, distinct mate streams and read-group checks.
+Interleaved-input tests cover both quality modes, file/stdin/FIFO input, a `tee`
+branch, missing mates, mismatched names and preservation of existing statistics.
 `make test` requires the external tools and fails if they
 are missing.
 

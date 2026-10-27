@@ -163,8 +163,8 @@ has a separate memory buffer that `--sort-memory` does not limit.
 
 ## Stream inputs
 
-Creation and checksum checking accept piped inputs. R1 and R2 stay separate;
-the CRAM, checksums and reports are still written to named files.
+Creation and checksum checking accept piped inputs. The CRAM, checksums and
+reports are still written to named files.
 
 To create a CRAM from an alignment stream, use **`--input -`**:
 
@@ -182,16 +182,22 @@ incoming alignment once and runs the creation steps described above.
 Verification stays enabled unless you add `--fast`.
 
 The checksum commands read records directly and do **not** sort or group them.
-For FASTQ checksums, either mate can use `-` for stdin while the other uses a
-file or named pipe:
+The original pipeline supplies **both FASTQ mates in one input stream**, with
+each R1 record immediately followed by its R2 record. The standalone checksum
+command accepts the same layout with `--interleaved --input -`:
 
 ```bash
 set -euo pipefail
-pigz -dc SAMPLE001_R1.fastq.gz \
+pigz -dc SAMPLE001.interleaved.fastq.gz \
   | python scripts/fastq_check.py stats \
-      --f1 - --f2 SAMPLE001_R2.fastq.gz \
+      --interleaved --input - \
       --quality-mode strict --output SAMPLE001.original.fastq.stats.json
 ```
+
+Here the input order is `pairA/1`, `pairA/2`, `pairB/1`, `pairB/2`, and so on.
+Any producer with this layout can feed the checksum command directly. As in the
+original pipeline, `tee` can also send the same stream to the checksum reader
+and another processing step; see the [tee example](docs/streaming.md#check-the-same-stream-while-another-command-processes-it).
 
 To check a streamed CRAM against saved FASTQ checksums:
 
@@ -203,11 +209,11 @@ cat SAMPLE001.cram \
       --stats SAMPLE001.original.fastq.stats.json --report SAMPLE001.comparison.json
 ```
 
-Both FASTQs can be streamed through **two separate named pipes**. The checksum
-command reads each pipe once and detects plain or gzip-compressed input.
+For separate R1/R2 sources, **two separate named pipes** remain supported through
+`--f1` and `--f2`. Both input modes read once and detect plain or gzip-compressed data.
 Creation accepts these FASTQ pipes with `--fast`; normal verified creation needs
 FASTQ files it can read twice. The reference FASTA and its index remain files.
-See [streaming examples](docs/streaming.md) for two-pipe commands, producer exit
+See [streaming examples](docs/streaming.md) for both FASTQ layouts, producer exit
 checks and the supported inputs for each command.
 
 ## Verify that a CRAM preserves the original FASTQ reads

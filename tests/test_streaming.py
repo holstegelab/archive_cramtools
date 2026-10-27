@@ -54,6 +54,11 @@ class StreamingTests(unittest.TestCase):
             "samtools", "view", "-h", "-O", fmt, "-T", str(self.reference), str(path),
         ])
 
+    def interleaved_bytes(self):
+        r1 = self.f1.read_bytes().splitlines(keepends=True)
+        r2 = self.f2.read_bytes().splitlines(keepends=True)
+        return b"".join(b"".join(r1[i:i + 4] + r2[i:i + 4]) for i in range(0, len(r1), 4))
+
     @contextmanager
     def pipes(self, payloads):
         """Independent writers; a reader that reopens or deadlocks hits a timeout."""
@@ -185,6 +190,98 @@ class StreamingTests(unittest.TestCase):
                     ], data)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(json.loads(output.read_text()), expected)
+
+    def test_interleaved_checksums_match_separate_mates(self):
+        for mode in ("pipeline", "strict"):
+            expected = fastq_stats(self.f1, self.f2, mode)
+            for compressed in (False, True):
+                data = self.interleaved_bytes()
+                if compressed:
+                    data = gzip.compress(data)
+                output = self.directory / "interleaved.stats.json"
+                args = ["stats", "--interleaved", "--quality-mode", mode, "--output", output]
+                with self.subTest(mode=mode, compressed=compressed, source="stdin"):
+                    # --input defaults to stdin, like the original pipeline CLI.
+                    result = self.cli("fastq_check.py", args, data)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(output.read_text()), expected)
+                with self.subTest(mode=mode, compressed=compressed, source="file"):
+                    source = self.directory / "interleaved.fastq"
+                    source.write_bytes(data)
+                    result = self.cli("fastq_check.py", [*args, "--input", source])
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(output.read_text()), expected)
+                with self.subTest(mode=mode, compressed=compressed, source="fifo"):
+                    with self.pipes([data]) as (fifo,):
+                        result = self.cli("fastq_check.py", [*args, "--input", fifo])
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(output.read_text()), expected)
+
+    def test_interleaved_checker_can_read_a_tee_branch(self):
+        fifo = self.directory / "checksums.pipe"
+        os.mkfifo(fifo)
+        output = self.directory / "tee.stats.json"
+        checker = subprocess.Popen([
+            sys.executable, str(ROOT / "scripts/fastq_check.py"), "stats", "--interleaved",
+            "--input", str(fifo), "--quality-mode", "strict", "--output", str(output),
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            data = self.interleaved_bytes()
+            forwarded = subprocess.run(["tee", str(fifo)], input=data, capture_output=True, timeout=30)
+            _, errors = checker.communicate(timeout=30)
+            self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
+            self.assertEqual(checker.returncode, 0, errors)
+            self.assertEqual(forwarded.stdout, data)
+            self.assertEqual(json.loads(output.read_text()), fastq_stats(self.f1, self.f2, "strict"))
+        finally:
+            if checker.poll() is None:
+                checker.kill()
+            checker.communicate(timeout=10)
+
+    def test_invalid_interleaved_stream_preserves_existing_stats(self):
+        complete = self.interleaved_bytes()
+        corrupt = bytearray(gzip.compress(complete))
+        corrupt[-8] ^= 1
+        invalid = {
+            "missing mate": b"".join(complete.splitlines(keepends=True)[:-4]),
+            "mismatched names": complete.replace(b"@pairA/2", b"@other/2"),
+            "truncated record": complete.rsplit(b"\n", 2)[0] + b"\n",
+            "corrupt gzip": bytes(corrupt),
+            "empty": b"",
+        }
+        for label, data in invalid.items():
+            with self.subTest(label=label):
+                output = self.directory / "existing.json"
+                output.write_bytes(b"previous statistics")
+                result = self.cli("fastq_check.py", [
+                    "stats", "--interleaved", "--input", "-", "--output", output,
+                ], data)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(output.read_bytes(), b"previous statistics")
+
+    def test_checksum_input_modes_are_mutually_exclusive(self):
+        cases = [
+            ["--interleaved", "--f1", self.f1],
+            ["--interleaved", "--f2", self.f2],
+            ["--input", "-"],
+            ["--f1", self.f1],
+            ["--f1", self.f1, "--f2", self.f2, "--input", "-"],
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                result = self.cli("fastq_check.py", ["stats", *args, "--output", "invalid.json"], b"")
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse((self.directory / "invalid.json").exists())
+
+    def test_interleaved_output_cannot_overwrite_source(self):
+        source = self.directory / "interleaved.fastq"
+        data = self.interleaved_bytes()
+        source.write_bytes(data)
+        result = self.cli("fastq_check.py", [
+            "stats", "--interleaved", "--input", source, "--output", source,
+        ])
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(source.read_bytes(), data)
 
     def test_invalid_fastq_stream_preserves_existing_stats(self):
         bad_gzip = bytearray(gzip.compress(self.f1.read_bytes()))
