@@ -105,7 +105,11 @@ python scripts/create_cram.py \
 ```
 
 The alignment can be SAM, BAM or CRAM. FASTQs can be plain or gzip compressed.
-The tool groups alignment records by read name automatically.
+The creation command uses `samtools collate` to put records with the same read
+name together before adding tags. It then uses `samtools sort` to write a
+position-sorted CRAM that can be indexed. `--name-collated` skips the first step
+when the input is already grouped by read name.
+
 Encoding currently uses samtools' default CRAM settings; it does not select
 the CRAM 3.1 `archive` profile used in the storage comparison above.
 
@@ -173,13 +177,13 @@ samtools view -u SAMPLE001.aligned.bam \
       --reference reference.fa --output-prefix SAMPLE001 --threads 4
 ```
 
-SAM, BAM and CRAM streams are supported. The alignment is read once; sorting and
-grouping can still use temporary disk space. Verification stays enabled unless
-you add `--fast`. Only use `--name-collated` if the incoming records are already
-grouped by read name.
+SAM, BAM and CRAM streams are supported. With `--input -`, creation reads the
+incoming alignment once and runs the creation steps described above.
+Verification stays enabled unless you add `--fast`.
 
-The FASTQ checksum command also accepts streams. Either mate can use `-` for
-stdin while the other uses a file or named pipe:
+The checksum commands read records directly and do **not** sort or group them.
+For FASTQ checksums, either mate can use `-` for stdin while the other uses a
+file or named pipe:
 
 ```bash
 set -euo pipefail

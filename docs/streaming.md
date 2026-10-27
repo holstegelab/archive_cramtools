@@ -33,10 +33,16 @@ You can replace `samtools view` with an aligner or another producer of valid
 SAM/BAM/CRAM. Creation reads the alignment once and checks the read-group headers
 as they pass through. It still re-adds dropped pairs from the original FASTQs.
 
-Creation groups records by name and sorts the final CRAM by position. Those
-steps may need temporary disk space even with streamed input; set `--tmp-dir`
-and `--sort-memory` as usual. If the input already groups every record for each
-read name, `--name-collated` skips the grouping step.
+The `create_cram.py` wrapper runs `samtools collate` before annotation and
+`samtools sort` afterwards to produce an indexed, position-sorted CRAM.
+`--name-collated` skips collation when records are already grouped by read name.
+These creation steps can use temporary files, controlled by `--tmp-dir` and
+`--sort-memory`.
+
+The `bam_merge` annotator itself does not sort or group records; it expects
+records for each read name to be together already. Neither checksum command
+sorts or groups its input. These are differences between the commands, not
+requirements imposed by streaming.
 
 Normal verification calculates FASTQ checksums before consuming the alignment,
 then compares them with the finished CRAM. The upstream alignment producer may
@@ -127,9 +133,10 @@ cat SAMPLE001.cram \
       --stats SAMPLE001.original.fastq.stats.json --report SAMPLE001.comparison.json
 ```
 
-The check works directly on primary records, so no grouping or alignment index
-is needed. The saved statistics determine the quality comparison policy. Exit
-codes remain 0 for a match, 1 for a mismatch and 2 for an input/tool error.
+The check reads primary records directly in any order, without sorting, grouping
+or an alignment index. The saved statistics determine the quality comparison
+policy. Exit codes remain 0 for a match, 1 for a mismatch and 2 for an input/tool
+error.
 
 The restoration command already accepts alignment input on stdin:
 
