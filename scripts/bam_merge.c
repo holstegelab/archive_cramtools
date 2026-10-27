@@ -695,9 +695,16 @@ int main(int argc,char**argv){
     char *line=NULL; size_t cap=0; ssize_t rl;
     char *cur_q=NULL;
     BamRow *group=NULL; int ng=0; int gcap=0; int wrote_badmap=0; char *last_rg=NULL;
+    int read_groups=0;
 
     while((rl=safe_getline(&line,&cap,stdin))>0){
-        if(line[0]=='@'){ fprintf(out, "%s\n", line); continue; }
+        if(line[0]=='@'){
+            if(!strncmp(line,"@RG\t",4) && ++read_groups>1){
+                fprintf(stderr,"Creation accepts one read group at a time; split the input before annotation\n");
+                return 1;
+            }
+            fprintf(out, "%s\n", line); continue;
+        }
         char *cpy=sdup(line);
         BamRow br=parse_bam_line(cpy); // takes ownership of cpy
         if(!cur_q){ cur_q=sdup(br.qname); }

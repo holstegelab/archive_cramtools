@@ -5,6 +5,10 @@ The high-level creation command adds tags and verifies the CRAM by default;
 not realign, mark duplicates or modify the alignment with the optional
 dechimerization algorithm.
 
+For piped alignment input or separate FASTQ input pipes in the supported commands,
+see [streaming inputs](streaming.md). The low-level SAM stream below is useful
+when building a custom annotation pipeline.
+
 ## Annotation as a SAM stream
 
 For custom workflows, the following is the extracted C annotator's interface.

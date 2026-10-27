@@ -46,6 +46,8 @@ also keeping the alignments. Compression depends on the data. See the
 4. **[Restore FASTQs](#restore-paired-fastqs):** recover paired reads for a new
    analysis whenever you need them.
 
+You can also [stream inputs](#stream-inputs) into creation and checksum commands.
+
 ## Install and test
 
 The easiest setup is the supplied conda environment:
@@ -155,6 +157,55 @@ already grouped by read name, `--name-collated` skips regrouping. Keeping that
 order close to the FASTQ order can reduce memory use when adding tags; this step
 has a separate memory buffer that `--sort-memory` does not limit.
 
+## Stream inputs
+
+Creation and checksum checking accept piped inputs. R1 and R2 stay separate;
+the CRAM, checksums and reports are still written to named files.
+
+To create a CRAM from an alignment stream, use **`--input -`**:
+
+```bash
+set -euo pipefail
+samtools view -u SAMPLE001.aligned.bam \
+  | python scripts/create_cram.py \
+      --input - \
+      --f1 SAMPLE001_R1.fastq.gz --f2 SAMPLE001_R2.fastq.gz \
+      --reference reference.fa --output-prefix SAMPLE001 --threads 4
+```
+
+SAM, BAM and CRAM streams are supported. The alignment is read once; sorting and
+grouping can still use temporary disk space. Verification stays enabled unless
+you add `--fast`. Only use `--name-collated` if the incoming records are already
+grouped by read name.
+
+The FASTQ checksum command also accepts streams. Either mate can use `-` for
+stdin while the other uses a file or named pipe:
+
+```bash
+set -euo pipefail
+pigz -dc SAMPLE001_R1.fastq.gz \
+  | python scripts/fastq_check.py stats \
+      --f1 - --f2 SAMPLE001_R2.fastq.gz \
+      --quality-mode strict --output SAMPLE001.original.fastq.stats.json
+```
+
+To check a streamed CRAM against saved FASTQ checksums:
+
+```bash
+set -euo pipefail
+cat SAMPLE001.cram \
+  | python scripts/fastq_check.py check \
+      --input - --reference reference.fa \
+      --stats SAMPLE001.original.fastq.stats.json --report SAMPLE001.comparison.json
+```
+
+Both FASTQs can be streamed through **two separate named pipes**. The checksum
+command reads each pipe once and detects plain or gzip-compressed input.
+Creation accepts these FASTQ pipes with `--fast`; normal verified creation needs
+FASTQ files it can read twice. The reference FASTA and its index remain files.
+See [streaming examples](docs/streaming.md) for two-pipe commands, producer exit
+checks and the supported inputs for each command.
+
 ## Verify that a CRAM preserves the original FASTQ reads
 
 Use this check to confirm that the CRAM preserves the read information from the
@@ -222,6 +273,7 @@ comparisons with the original FASTQs.
 
 - [Tag format and supported inputs](docs/format.md)
 - [Checksums, quality policies and limitations](docs/validation.md)
+- [Streaming inputs and named-pipe examples](docs/streaming.md)
 - [Advanced use and optional clipping](docs/advanced.md)
 - [Source provenance and standalone changes](docs/provenance.md)
 - [Troubleshooting](docs/troubleshooting.md)

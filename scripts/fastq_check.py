@@ -3,9 +3,11 @@
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 from itertools import zip_longest
@@ -19,33 +21,41 @@ MODULUS = 1 << 256
 
 def read_fastq(path):
     """Read complete four-line FASTQ records, checking gzip CRCs through EOF."""
-    with open(path, "rb") as probe:
-        compressed = probe.read(2) == b"\x1f\x8b"
-    opener = gzip.open if compressed else open
-    with opener(path, "rt", encoding="ascii", newline=None) as handle:
-        number = 0
-        while True:
-            header = handle.readline()
-            if not header:
-                break
-            number += 1
-            lines = [handle.readline() for _ in range(3)]
-            if not all(lines):
-                raise ValueError(f"{path}: truncated FASTQ record {number}")
-            seq, plus, qual = [line.rstrip("\r\n") for line in lines]
-            fields = header[1:].split()
-            if not header.startswith("@") or not fields or not plus.startswith("+"):
-                raise ValueError(f"{path}: malformed FASTQ record {number}")
-            name = fields[0]
-            if name.endswith(("/1", "/2")):
-                name = name[:-2]
-            if not name or not seq or len(seq) != len(qual):
-                raise ValueError(f"{path}: invalid sequence/quality lengths at record {number}")
-            if any(b not in "ACGTN" for b in seq):
-                raise ValueError(f"{path}: expected uppercase A/C/G/T/N at record {number}")
-            if any(not 33 <= ord(q) <= 126 for q in qual):
-                raise ValueError(f"{path}: invalid Phred+33 quality at record {number}")
-            yield name, seq, qual
+    # Open once: reopening after probing would consume bytes from a pipe.
+    # Own a duplicate of stdin so closing this reader does not close sys.stdin.
+    raw = os.fdopen(os.dup(sys.stdin.fileno()), "rb") if str(path) == "-" else open(path, "rb")
+    with raw:
+        # A pipe may deliver only the first byte of the gzip header initially.
+        # Plain FASTQ starts with '@'; GzipFile validates the full gzip header.
+        decoded = gzip.GzipFile(fileobj=raw) if raw.peek(1).startswith(b"\x1f") else raw
+        with io.TextIOWrapper(decoded, encoding="ascii", newline=None) as handle:
+            yield from parse_fastq(handle, path)
+
+
+def parse_fastq(handle, path):
+    number = 0
+    while True:
+        header = handle.readline()
+        if not header:
+            break
+        number += 1
+        lines = [handle.readline() for _ in range(3)]
+        if not all(lines):
+            raise ValueError(f"{path}: truncated FASTQ record {number}")
+        seq, plus, qual = [line.rstrip("\r\n") for line in lines]
+        fields = header[1:].split()
+        if not header.startswith("@") or not fields or not plus.startswith("+"):
+            raise ValueError(f"{path}: malformed FASTQ record {number}")
+        name = fields[0]
+        if name.endswith(("/1", "/2")):
+            name = name[:-2]
+        if not name or not seq or len(seq) != len(qual):
+            raise ValueError(f"{path}: invalid sequence/quality lengths at record {number}")
+        if any(b not in "ACGTN" for b in seq):
+            raise ValueError(f"{path}: expected uppercase A/C/G/T/N at record {number}")
+        if any(not 33 <= ord(q) <= 126 for q in qual):
+            raise ValueError(f"{path}: invalid Phred+33 quality at record {number}")
+        yield name, seq, qual
 
 
 def empty_stats(mode):
@@ -73,6 +83,13 @@ def accumulate(stats, mate, name, seq, qual):
 
 
 def fastq_stats(f1, f2, mode="pipeline"):
+    if str(f1) == str(f2) == "-":
+        raise ValueError("R1 and R2 need separate streams; only one can use stdin (-)")
+    inputs = [os.fstat(sys.stdin.fileno()) if str(p) == "-" else os.stat(p) for p in (f1, f2)]
+    if all(stat.S_ISFIFO(info.st_mode) for info in inputs) and (
+        inputs[0].st_dev, inputs[0].st_ino
+    ) == (inputs[1].st_dev, inputs[1].st_ino):
+        raise ValueError("R1 and R2 must use separate input pipes")
     stats = empty_stats(mode)
     for r1, r2 in zip_longest(read_fastq(f1), read_fastq(f2)):
         if r1 is None or r2 is None:
@@ -160,12 +177,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="Validate paired FASTQs and save expected payload digests")
-    stats_parser.add_argument("--f1", required=True)
-    stats_parser.add_argument("--f2", required=True)
+    stats_parser.add_argument("--f1", required=True, help="R1 FASTQ[.gz]: file, pipe, or - for stdin")
+    stats_parser.add_argument("--f2", required=True, help="R2 FASTQ[.gz]: file, pipe, or - for stdin (at most one mate)")
     stats_parser.add_argument("--quality-mode", choices=("pipeline", "strict"), default="pipeline")
     stats_parser.add_argument("-o", "--output", required=True)
     check_parser = commands.add_parser("check", help="Compare restored primary reads with expected digests")
-    check_parser.add_argument("-i", "--input", required=True)
+    check_parser.add_argument("-i", "--input", required=True, help="SAM/BAM/CRAM file or - for stdin")
     check_parser.add_argument("-T", "--reference")
     check_parser.add_argument("--stats", required=True)
     check_parser.add_argument("--report")

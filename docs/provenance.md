@@ -28,7 +28,8 @@ Trailing whitespace in the extracted C annotation/clipping sources was normalize
 
 - `bam_merge.c`: shell quoting for source FASTQ paths, plain FASTQ support via
   pigz, propagation of decompression/write failures, rejection of malformed SAM
-  records and existing restoration tags.
+  records, existing restoration tags and multiple declared read groups, including
+  when alignment input is streamed.
 - `bam_revert.py`: reject incomplete/inconsistent tag pairs, absent payloads and
   mapped hard clips without matching tags; resolve output aliases and report
   malformed numeric fields as CLI errors.
@@ -37,9 +38,12 @@ Trailing whitespace in the extracted C annotation/clipping sources was normalize
   then publishes the CRAM, index and reports with a sample filename prefix.
   `--fast` skips the separate FASTQ checksum pass and final read comparison,
   recording verification as skipped in the completion metadata.
+  Accepts alignment stdin/named pipes and separate FASTQ named pipes with `--fast`.
 - New `fastq_check.py`: streaming input validation and name/mate-aware SHA-256
   sums with explicit pipeline/strict quality modes. This is an addition to, not
   a byte-compatible replacement for, the historic FNV-1a XOR format.
+  Reads plain/gzip FASTQ files or pipes in one pass, with stdin available for one
+  FASTQ mate or for the alignment being checked.
 - New standalone build/environment, integration tests, synthetic demonstration
   and English documentation.
 

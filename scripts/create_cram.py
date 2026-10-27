@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -79,9 +80,10 @@ def pipeline(commands):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-i", "--input", required=True, help="SAM/BAM/CRAM from one read group, before tag annotation")
-    parser.add_argument("--f1", required=True, help="original untrimmed R1 FASTQ[.gz], Phred+33")
-    parser.add_argument("--f2", required=True, help="original untrimmed R2 FASTQ[.gz], Phred+33")
+    parser.add_argument("-i", "--input", required=True,
+                        help="SAM/BAM/CRAM from one read group, before tag annotation; - reads stdin")
+    parser.add_argument("--f1", required=True, help="original R1 FASTQ[.gz], Phred+33; named pipes require --fast")
+    parser.add_argument("--f2", required=True, help="original R2 FASTQ[.gz], Phred+33; named pipes require --fast")
     parser.add_argument("-T", "--reference", required=True, help="matching indexed FASTA")
     parser.add_argument("-o", "--output-prefix", required=True, metavar="SAMPLE",
                         help="sample filename prefix, optionally with a directory (e.g. results/SAMPLE001)")
@@ -98,10 +100,29 @@ def main(argv=None):
     try:
         if args.threads < 1:
             raise ValueError("--threads must be positive")
+        input_stream = args.input == "-"
+        pipe_sources = {}
         for key in ("input", "f1", "f2", "reference"):
+            if key == "input" and input_stream:
+                info = os.fstat(sys.stdin.fileno())
+                if stat.S_ISFIFO(info.st_mode):
+                    pipe_sources[(info.st_dev, info.st_ino)] = "input"
+                continue
+            if key in ("f1", "f2") and getattr(args, key) == "-":
+                raise ValueError(f"--{key} requires a filename or named pipe; stdin is reserved for --input -")
             value = Path(getattr(args, key)).resolve(strict=True)
-            if not value.is_file():
-                raise ValueError(f"--{key} must be a regular file")
+            info = value.stat()
+            if stat.S_ISFIFO(info.st_mode) and key != "reference":
+                identity = (info.st_dev, info.st_ino)
+                if identity in pipe_sources:
+                    raise ValueError(f"--{key} and --{pipe_sources[identity]} must use separate input pipes")
+                pipe_sources[identity] = key
+                if key == "input":
+                    input_stream = True
+                elif not args.fast:
+                    raise ValueError("FASTQ pipes require --fast; verified creation reads each FASTQ twice")
+            elif not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"--{key} must be a regular file" + (" or named pipe" if key != "reference" else ""))
             setattr(args, key, str(value))
         if not Path(args.reference + ".fai").is_file():
             raise ValueError("Index the reference first: samtools faidx reference.fa")
@@ -124,9 +145,12 @@ def main(argv=None):
             # be mistaken for verification of this new CRAM.
             del destinations["fastq_stats"]
             del destinations["verification"]
-        header = subprocess.check_output([args.samtools, "view", "-H", "-T", args.reference, args.input], text=True)
-        if sum(line.startswith("@RG\t") for line in header.splitlines()) > 1:
-            raise ValueError("Creation accepts one read group at a time; split the input before annotation")
+        if not input_stream:
+            header = subprocess.check_output([args.samtools, "view", "-H", "-T", args.reference, args.input], text=True)
+            if sum(line.startswith("@RG\t") for line in header.splitlines()) > 1:
+                raise ValueError("Creation accepts one read group at a time; split the input before annotation")
+        # Streams can only be read once. bam_merge checks their @RG headers as
+        # they pass through, without consuming or staging an extra input copy.
         if args.fast:
             print("Fast mode: skipping FASTQ checksums and final read comparison.", file=sys.stderr)
         else:

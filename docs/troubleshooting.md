@@ -15,6 +15,8 @@
 | Hard clip without matching tag payload | The removed bases are absent; use the correct original tagged file or regenerate tags from original FASTQs |
 | Reversion reports multiple/missing primary mates | Inspect `(QNAME, RG)` identities and mate flags; singletons and single-end inputs are unsupported |
 | Native checks differ on legacy qualities | Native Phred detection is heuristic; normalize encoding explicitly and use the standalone checker |
+| `FASTQ pipes require --fast` during creation | Use `--fast`, or provide regular FASTQ files for the default verification, which reads them twice |
+| A named-pipe command waits without progress | Start a separate producer for each pipe; each mate needs a distinct pipe consumed only once. See [streaming examples](streaming.md) |
 
 Check the process exit code for every command. `samtools quickcheck` alone does
 not compare read contents; by default the creation wrapper additionally decodes
